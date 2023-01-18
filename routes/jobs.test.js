@@ -1,127 +1,277 @@
 'use strict';
 
-/** Routes for jobs. */
+const request = require('supertest');
 
-const jsonschema = require('jsonschema');
+const app = require('../app');
 
-const express = require('express');
-const { BadRequestError } = require('../expressError');
-const { ensureAdmin } = require('../middleware/auth');
-const Job = require('../models/job');
-const jobNewSchema = require('../schemas/jobNew.json');
-const jobUpdateSchema = require('../schemas/jobUpdate.json');
-const jobSearchSchema = require('../schemas/jobSearch.json');
+const {
+	commonBeforeAll,
+	commonBeforeEach,
+	commonAfterEach,
+	commonAfterAll,
+	testJobIds,
+	u1Token,
+	adminToken
+} = require('./_testCommon');
 
-const router = express.Router({ mergeParams: true });
+beforeAll(commonBeforeAll);
+beforeEach(commonBeforeEach);
+afterEach(commonAfterEach);
+afterAll(commonAfterAll);
 
-/** POST / { job } => { job }
- *
- * job should be { title, salary, equity, companyHandle }
- *
- * Returns { id, title, salary, equity, companyHandle }
- *
- * Authorization required: admin
- */
+/************************************** POST /jobs */
 
-router.post('/', ensureAdmin, async function(req, res, next) {
-	try {
-		const validator = jsonschema.validate(req.body, jobNewSchema);
-		if (!validator.valid) {
-			const errs = validator.errors.map((e) => e.stack);
-			throw new BadRequestError(errs);
-		}
+describe('POST /jobs', function() {
+	test('ok for admin', async function() {
+		const resp = await request(app)
+			.post(`/jobs`)
+			.send({
+				companyHandle: 'c1',
+				title: 'J-new',
+				salary: 10,
+				equity: '0.2'
+			})
+			.set('authorization', `Bearer ${adminToken}`);
+		expect(resp.statusCode).toEqual(201);
+		expect(resp.body).toEqual({
+			job: {
+				id: expect.any(Number),
+				title: 'J-new',
+				salary: 10,
+				equity: '0.2',
+				companyHandle: 'c1'
+			}
+		});
+	});
 
-		const job = await Job.create(req.body);
-		return res.status(201).json({ job });
-	} catch (err) {
-		return next(err);
-	}
+	test('unauth for users', async function() {
+		const resp = await request(app)
+			.post(`/jobs`)
+			.send({
+				companyHandle: 'c1',
+				title: 'J-new',
+				salary: 10,
+				equity: '0.2'
+			})
+			.set('authorization', `Bearer ${u1Token}`);
+		expect(resp.statusCode).toEqual(401);
+	});
+
+	test('bad request with missing data', async function() {
+		const resp = await request(app)
+			.post(`/jobs`)
+			.send({
+				companyHandle: 'c1'
+			})
+			.set('authorization', `Bearer ${adminToken}`);
+		expect(resp.statusCode).toEqual(400);
+	});
+
+	test('bad request with invalid data', async function() {
+		const resp = await request(app)
+			.post(`/jobs`)
+			.send({
+				companyHandle: 'c1',
+				title: 'J-new',
+				salary: 'not-a-number',
+				equity: '0.2'
+			})
+			.set('authorization', `Bearer ${adminToken}`);
+		expect(resp.statusCode).toEqual(400);
+	});
 });
 
-/** GET / =>
- *   { jobs: [ { id, title, salary, equity, companyHandle, companyName }, ...] }
- *
- * Can provide search filter in query:
- * - minSalary
- * - hasEquity (true returns only jobs with equity > 0, other values ignored)
- * - title (will find case-insensitive, partial matches)
+/************************************** GET /jobs */
 
- * Authorization required: none
- */
+describe('GET /jobs', function() {
+	test('ok for anon', async function() {
+		const resp = await request(app).get(`/jobs`);
+		expect(resp.body).toEqual({
+			jobs: [
+				{
+					id: expect.any(Number),
+					title: 'J1',
+					salary: 1,
+					equity: '0.1',
+					companyHandle: 'c1',
+					companyName: 'C1'
+				},
+				{
+					id: expect.any(Number),
+					title: 'J2',
+					salary: 2,
+					equity: '0.2',
+					companyHandle: 'c1',
+					companyName: 'C1'
+				},
+				{
+					id: expect.any(Number),
+					title: 'J3',
+					salary: 3,
+					equity: null,
+					companyHandle: 'c1',
+					companyName: 'C1'
+				}
+			]
+		});
+	});
 
-router.get('/', async function(req, res, next) {
-	const q = req.query;
-	// arrive as strings from querystring, but we want as int/bool
-	if (q.minSalary !== undefined) q.minSalary = +q.minSalary;
-	q.hasEquity = q.hasEquity === 'true';
+	test('works: filtering', async function() {
+		const resp = await request(app).get(`/jobs`).query({ hasEquity: true });
+		expect(resp.body).toEqual({
+			jobs: [
+				{
+					id: expect.any(Number),
+					title: 'J1',
+					salary: 1,
+					equity: '0.1',
+					companyHandle: 'c1',
+					companyName: 'C1'
+				},
+				{
+					id: expect.any(Number),
+					title: 'J2',
+					salary: 2,
+					equity: '0.2',
+					companyHandle: 'c1',
+					companyName: 'C1'
+				}
+			]
+		});
+	});
 
-	try {
-		const validator = jsonschema.validate(q, jobSearchSchema);
-		if (!validator.valid) {
-			const errs = validator.errors.map((e) => e.stack);
-			throw new BadRequestError(errs);
-		}
+	test('works: filtering on 2 filters', async function() {
+		const resp = await request(app).get(`/jobs`).query({ minSalary: 2, title: '3' });
+		expect(resp.body).toEqual({
+			jobs: [
+				{
+					id: expect.any(Number),
+					title: 'J3',
+					salary: 3,
+					equity: null,
+					companyHandle: 'c1',
+					companyName: 'C1'
+				}
+			]
+		});
+	});
 
-		const jobs = await Job.findAll(q);
-		return res.json({ jobs });
-	} catch (err) {
-		return next(err);
-	}
+	test('bad request on invalid filter key', async function() {
+		const resp = await request(app).get(`/jobs`).query({ minSalary: 2, nope: 'nope' });
+		expect(resp.statusCode).toEqual(400);
+	});
 });
 
-/** GET /[jobId] => { job }
- *
- * Returns { id, title, salary, equity, company }
- *   where company is { handle, name, description, numEmployees, logoUrl }
- *
- * Authorization required: none
- */
+/************************************** GET /jobs/:id */
 
-router.get('/:id', async function(req, res, next) {
-	try {
-		const job = await Job.get(req.params.id);
-		return res.json({ job });
-	} catch (err) {
-		return next(err);
-	}
+describe('GET /jobs/:id', function() {
+	test('works for anon', async function() {
+		const resp = await request(app).get(`/jobs/${testJobIds[0]}`);
+		expect(resp.body).toEqual({
+			job: {
+				id: testJobIds[0],
+				title: 'J1',
+				salary: 1,
+				equity: '0.1',
+				company: {
+					handle: 'c1',
+					name: 'C1',
+					description: 'Desc1',
+					numEmployees: 1,
+					logoUrl: 'http://c1.img'
+				}
+			}
+		});
+	});
+
+	test('not found for no such job', async function() {
+		const resp = await request(app).get(`/jobs/0`);
+		expect(resp.statusCode).toEqual(404);
+	});
 });
 
-/** PATCH /[jobId]  { fld1, fld2, ... } => { job }
- *
- * Data can include: { title, salary, equity }
- *
- * Returns { id, title, salary, equity, companyHandle }
- *
- * Authorization required: admin
- */
+/************************************** PATCH /jobs/:id */
 
-router.patch('/:id', ensureAdmin, async function(req, res, next) {
-	try {
-		const validator = jsonschema.validate(req.body, jobUpdateSchema);
-		if (!validator.valid) {
-			const errs = validator.errors.map((e) => e.stack);
-			throw new BadRequestError(errs);
-		}
+describe('PATCH /jobs/:id', function() {
+	test('works for admin', async function() {
+		const resp = await request(app)
+			.patch(`/jobs/${testJobIds[0]}`)
+			.send({
+				title: 'J-New'
+			})
+			.set('authorization', `Bearer ${adminToken}`);
+		expect(resp.body).toEqual({
+			job: {
+				id: expect.any(Number),
+				title: 'J-New',
+				salary: 1,
+				equity: '0.1',
+				companyHandle: 'c1'
+			}
+		});
+	});
 
-		const job = await Job.update(req.params.id, req.body);
-		return res.json({ job });
-	} catch (err) {
-		return next(err);
-	}
+	test('unauth for others', async function() {
+		const resp = await request(app)
+			.patch(`/jobs/${testJobIds[0]}`)
+			.send({
+				title: 'J-New'
+			})
+			.set('authorization', `Bearer ${u1Token}`);
+		expect(resp.statusCode).toEqual(401);
+	});
+
+	test('not found on no such job', async function() {
+		const resp = await request(app)
+			.patch(`/jobs/0`)
+			.send({
+				handle: 'new'
+			})
+			.set('authorization', `Bearer ${adminToken}`);
+		expect(resp.statusCode).toEqual(400);
+	});
+
+	test('bad request on handle change attempt', async function() {
+		const resp = await request(app)
+			.patch(`/jobs/${testJobIds[0]}`)
+			.send({
+				handle: 'new'
+			})
+			.set('authorization', `Bearer ${adminToken}`);
+		expect(resp.statusCode).toEqual(400);
+	});
+
+	test('bad request with invalid data', async function() {
+		const resp = await request(app)
+			.patch(`/jobs/${testJobIds[0]}`)
+			.send({
+				salary: 'not-a-number'
+			})
+			.set('authorization', `Bearer ${adminToken}`);
+		expect(resp.statusCode).toEqual(400);
+	});
 });
 
-/** DELETE /[handle]  =>  { deleted: id }
- *
- * Authorization required: admin
- */
+/************************************** DELETE /jobs/:id */
 
-router.delete('/:id', ensureAdmin, async function(req, res, next) {
-	try {
-		await Job.remove(req.params.id);
-		return res.json({ deleted: +req.params.id });
-	} catch (err) {
-		return next(err);
-	}
+describe('DELETE /jobs/:id', function() {
+	test('works for admin', async function() {
+		const resp = await request(app).delete(`/jobs/${testJobIds[0]}`).set('authorization', `Bearer ${adminToken}`);
+		expect(resp.body).toEqual({ deleted: testJobIds[0] });
+	});
+
+	test('unauth for others', async function() {
+		const resp = await request(app).delete(`/jobs/${testJobIds[0]}`).set('authorization', `Bearer ${u1Token}`);
+		expect(resp.statusCode).toEqual(401);
+	});
+
+	test('unauth for anon', async function() {
+		const resp = await request(app).delete(`/jobs/${testJobIds[0]}`);
+		expect(resp.statusCode).toEqual(401);
+	});
+
+	test('not found for no such job', async function() {
+		const resp = await request(app).delete(`/jobs/0`).set('authorization', `Bearer ${adminToken}`);
+		expect(resp.statusCode).toEqual(404);
+	});
 });
-
-module.exports = router;

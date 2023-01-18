@@ -1,37 +1,19 @@
-const { sqlForPartialUpdate } = require("./sql")
+const { sqlForPartialUpdate } = require('./sql');
 
-describe("sqlForPartialUpdate", function () {
-    test("passes for 1 item input", function() {
-        const result = sqlForPartialUpdate(
-        
-            {testK: "test_v"},
-            {testK: "test_k"}
-            )
-        expect(result).toEqual({
-            setCols: "\"test_k\"=$1",
-            values: ["test_v"]
+describe('sqlForPartialUpdate', function() {
+	test('works: 1 item', function() {
+		const result = sqlForPartialUpdate({ f1: 'v1' }, { f1: 'f1', fF2: 'f2' });
+		expect(result).toEqual({
+			setCols: '"f1"=$1',
+			values: [ 'v1' ]
+		});
+	});
 
-        })
-    });
-
-    test("passes 2 items", function () {
-        const result = sqlForPartialUpdate(
-            { k1: "v1", wowItWorks: "v2" },
-            {wowItWorks: "k2" }
-        );
-        expect(result).toEqual({
-            setCols: "\"k1\"=$1, \"k2\"=$2",
-            values: ["v1", "v2"]
-        })
-        expect(result.values.length).toEqual(2)
-    })
-
-    test("converts specified variable names from JS to SQL", () => {
-        const result = sqlForPartialUpdate(
-            { k1: "v1", wowItWorks: "v2" },
-            {wowItWorks: "k2" }
-        );
-        expect(result.setCols.split(', ')[1]).toEqual("\"k2\"=$2")
-        expect(result.values.length).toEqual(2)
-    })
-})
+	test('works: 2 items', function() {
+		const result = sqlForPartialUpdate({ f1: 'v1', jsF2: 'v2' }, { jsF2: 'f2' });
+		expect(result).toEqual({
+			setCols: '"f1"=$1, "f2"=$2',
+			values: [ 'v1', 'v2' ]
+		});
+	});
+});

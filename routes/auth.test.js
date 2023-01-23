@@ -1,114 +1,64 @@
-"use strict";
+'use strict';
 
-const request = require("supertest");
+/** Routes for authentication. */
 
-const app = require("../app");
+const jsonschema = require('jsonschema');
 
-const {
-  commonBeforeAll,
-  commonBeforeEach,
-  commonAfterEach,
-  commonAfterAll,
-} = require("./_testCommon");
+const User = require('../models/user');
+const express = require('express');
+const router = new express.Router();
+const { createToken } = require('../helpers/tokens');
+const userAuthSchema = require('../schemas/userAuth.json');
+const userRegisterSchema = require('../schemas/userRegister.json');
+const { BadRequestError } = require('../expressError');
 
-beforeAll(commonBeforeAll);
-beforeEach(commonBeforeEach);
-afterEach(commonAfterEach);
-afterAll(commonAfterAll);
+/** POST /auth/token:  { username, password } => { token }
+ *
+ * Returns JWT token which can be used to authenticate further requests.
+ *
+ * Authorization required: none
+ */
 
-/************************************** POST /auth/token */
+router.post('/token', async function(req, res, next) {
+	try {
+		const validator = jsonschema.validate(req.body, userAuthSchema);
+		if (!validator.valid) {
+			const errs = validator.errors.map((e) => e.stack);
+			throw new BadRequestError(errs);
+		}
 
-describe("POST /auth/token", function () {
-  test("works", async function () {
-    const resp = await request(app)
-        .post("/auth/token")
-        .send({
-          username: "u1",
-          password: "password1",
-        });
-    expect(resp.body).toEqual({
-      "token": expect.any(String),
-    });
-  });
-
-  test("unauth with non-existent user", async function () {
-    const resp = await request(app)
-        .post("/auth/token")
-        .send({
-          username: "no-such-user",
-          password: "password1",
-        });
-    expect(resp.statusCode).toEqual(401);
-  });
-
-  test("unauth with wrong password", async function () {
-    const resp = await request(app)
-        .post("/auth/token")
-        .send({
-          username: "u1",
-          password: "nope",
-        });
-    expect(resp.statusCode).toEqual(401);
-  });
-
-  test("bad request with missing data", async function () {
-    const resp = await request(app)
-        .post("/auth/token")
-        .send({
-          username: "u1",
-        });
-    expect(resp.statusCode).toEqual(400);
-  });
-
-  test("bad request with invalid data", async function () {
-    const resp = await request(app)
-        .post("/auth/token")
-        .send({
-          username: 42,
-          password: "above-is-a-number",
-        });
-    expect(resp.statusCode).toEqual(400);
-  });
+		const { username, password } = req.body;
+		const user = await User.authenticate(username, password);
+		const token = createToken(user);
+		return res.json({ token });
+	} catch (err) {
+		return next(err);
+	}
 });
 
-/************************************** POST /auth/register */
+/** POST /auth/register:   { user } => { token }
+ *
+ * user must include { username, password, firstName, lastName, email }
+ *
+ * Returns JWT token which can be used to authenticate further requests.
+ *
+ * Authorization required: none
+ */
 
-describe("POST /auth/register", function () {
-  test("works for anon", async function () {
-    const resp = await request(app)
-        .post("/auth/register")
-        .send({
-          username: "new",
-          firstName: "first",
-          lastName: "last",
-          password: "password",
-          email: "new@email.com",
-        });
-    expect(resp.statusCode).toEqual(201);
-    expect(resp.body).toEqual({
-      "token": expect.any(String),
-    });
-  });
+router.post('/register', async function(req, res, next) {
+	try {
+		const validator = jsonschema.validate(req.body, userRegisterSchema);
+		if (!validator.valid) {
+			const errs = validator.errors.map((e) => e.stack);
+			throw new BadRequestError(errs);
+		}
 
-  test("bad request with missing fields", async function () {
-    const resp = await request(app)
-        .post("/auth/register")
-        .send({
-          username: "new",
-        });
-    expect(resp.statusCode).toEqual(400);
-  });
-
-  test("bad request with invalid data", async function () {
-    const resp = await request(app)
-        .post("/auth/register")
-        .send({
-          username: "new",
-          firstName: "first",
-          lastName: "last",
-          password: "password",
-          email: "not-an-email",
-        });
-    expect(resp.statusCode).toEqual(400);
-  });
+		const newUser = await User.register({ ...req.body, isAdmin: false });
+		const token = createToken(newUser);
+		return res.status(201).json({ token });
+	} catch (err) {
+		return next(err);
+	}
 });
+
+module.exports = router;

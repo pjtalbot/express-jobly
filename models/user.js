@@ -1,210 +1,255 @@
-"use strict";
+'use strict';
 
-const db = require("../db");
-const bcrypt = require("bcrypt");
-const { sqlForPartialUpdate } = require("../helpers/sql");
-const {
-  NotFoundError,
-  BadRequestError,
-  UnauthorizedError,
-} = require("../expressError");
+const { NotFoundError, BadRequestError, UnauthorizedError } = require('../expressError');
+const db = require('../db.js');
+const User = require('./user.js');
+const { commonBeforeAll, commonBeforeEach, commonAfterEach, commonAfterAll, testJobIds } = require('./_testCommon');
 
-const { BCRYPT_WORK_FACTOR } = require("../config.js");
+beforeAll(commonBeforeAll);
+beforeEach(commonBeforeEach);
+afterEach(commonAfterEach);
+afterAll(commonAfterAll);
 
-/** Related functions for users. */
+/************************************** authenticate */
 
-class User {
-  /** authenticate user with username, password.
-   *
-   * Returns { username, first_name, last_name, email, is_admin }
-   *
-   * Throws UnauthorizedError is user not found or wrong password.
-   **/
+describe('authenticate', function() {
+	test('works', async function() {
+		const user = await User.authenticate('u1', 'password1');
+		expect(user).toEqual({
+			username: 'u1',
+			firstName: 'U1F',
+			lastName: 'U1L',
+			email: 'u1@email.com',
+			isAdmin: false
+		});
+	});
 
-  static async authenticate(username, password) {
-    // try to find the user first
-    const result = await db.query(
-          `SELECT username,
-                  password,
-                  first_name AS "firstName",
-                  last_name AS "lastName",
-                  email,
-                  is_admin AS "isAdmin"
-           FROM users
-           WHERE username = $1`,
-        [username],
-    );
+	test('unauth if no such user', async function() {
+		try {
+			await User.authenticate('nope', 'password');
+			fail();
+		} catch (err) {
+			expect(err instanceof UnauthorizedError).toBeTruthy();
+		}
+	});
 
-    const user = result.rows[0];
+	test('unauth if wrong password', async function() {
+		try {
+			await User.authenticate('c1', 'wrong');
+			fail();
+		} catch (err) {
+			expect(err instanceof UnauthorizedError).toBeTruthy();
+		}
+	});
+});
 
-    if (user) {
-      // compare hashed password to a new hash from password
-      const isValid = await bcrypt.compare(password, user.password);
-      if (isValid === true) {
-        delete user.password;
-        return user;
-      }
-    }
+/************************************** register */
 
-    throw new UnauthorizedError("Invalid username/password");
-  }
+describe('register', function() {
+	const newUser = {
+		username: 'new',
+		firstName: 'Test',
+		lastName: 'Tester',
+		email: 'test@test.com',
+		isAdmin: false
+	};
 
-  /** Register user with data.
-   *
-   * Returns { username, firstName, lastName, email, isAdmin }
-   *
-   * Throws BadRequestError on duplicates.
-   **/
+	test('works', async function() {
+		let user = await User.register({
+			...newUser,
+			password: 'password'
+		});
+		expect(user).toEqual(newUser);
+		const found = await db.query("SELECT * FROM users WHERE username = 'new'");
+		expect(found.rows.length).toEqual(1);
+		expect(found.rows[0].is_admin).toEqual(false);
+		expect(found.rows[0].password.startsWith('$2b$')).toEqual(true);
+	});
 
-  static async register(
-      { username, password, firstName, lastName, email, isAdmin }) {
-    const duplicateCheck = await db.query(
-          `SELECT username
-           FROM users
-           WHERE username = $1`,
-        [username],
-    );
+	test('works: adds admin', async function() {
+		let user = await User.register({
+			...newUser,
+			password: 'password',
+			isAdmin: true
+		});
+		expect(user).toEqual({ ...newUser, isAdmin: true });
+		const found = await db.query("SELECT * FROM users WHERE username = 'new'");
+		expect(found.rows.length).toEqual(1);
+		expect(found.rows[0].is_admin).toEqual(true);
+		expect(found.rows[0].password.startsWith('$2b$')).toEqual(true);
+	});
 
-    if (duplicateCheck.rows[0]) {
-      throw new BadRequestError(`Duplicate username: ${username}`);
-    }
+	test('bad request with dup data', async function() {
+		try {
+			await User.register({
+				...newUser,
+				password: 'password'
+			});
+			await User.register({
+				...newUser,
+				password: 'password'
+			});
+			fail();
+		} catch (err) {
+			expect(err instanceof BadRequestError).toBeTruthy();
+		}
+	});
+});
 
-    const hashedPassword = await bcrypt.hash(password, BCRYPT_WORK_FACTOR);
+/************************************** findAll */
 
-    const result = await db.query(
-          `INSERT INTO users
-           (username,
-            password,
-            first_name,
-            last_name,
-            email,
-            is_admin)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING username, first_name AS "firstName", last_name AS "lastName", email, is_admin AS "isAdmin"`,
-        [
-          username,
-          hashedPassword,
-          firstName,
-          lastName,
-          email,
-          isAdmin,
-        ],
-    );
+describe('findAll', function() {
+	test('works', async function() {
+		const users = await User.findAll();
+		expect(users).toEqual([
+			{
+				username: 'u1',
+				firstName: 'U1F',
+				lastName: 'U1L',
+				email: 'u1@email.com',
+				isAdmin: false
+			},
+			{
+				username: 'u2',
+				firstName: 'U2F',
+				lastName: 'U2L',
+				email: 'u2@email.com',
+				isAdmin: false
+			}
+		]);
+	});
+});
 
-    const user = result.rows[0];
+/************************************** get */
 
-    return user;
-  }
+describe('get', function() {
+	test('works', async function() {
+		let user = await User.get('u1');
+		expect(user).toEqual({
+			username: 'u1',
+			firstName: 'U1F',
+			lastName: 'U1L',
+			email: 'u1@email.com',
+			isAdmin: false,
+			applications: [ testJobIds[0] ]
+		});
+	});
 
-  /** Find all users.
-   *
-   * Returns [{ username, first_name, last_name, email, is_admin }, ...]
-   **/
+	test('not found if no such user', async function() {
+		try {
+			await User.get('nope');
+			fail();
+		} catch (err) {
+			expect(err instanceof NotFoundError).toBeTruthy();
+		}
+	});
+});
 
-  static async findAll() {
-    const result = await db.query(
-          `SELECT username,
-                  first_name AS "firstName",
-                  last_name AS "lastName",
-                  email,
-                  is_admin AS "isAdmin"
-           FROM users
-           ORDER BY username`,
-    );
+/************************************** update */
 
-    return result.rows;
-  }
+describe('update', function() {
+	const updateData = {
+		firstName: 'NewF',
+		lastName: 'NewF',
+		email: 'new@email.com',
+		isAdmin: true
+	};
 
-  /** Given a username, return data about user.
-   *
-   * Returns { username, first_name, last_name, is_admin, jobs }
-   *   where jobs is { id, title, company_handle, company_name, state }
-   *
-   * Throws NotFoundError if user not found.
-   **/
+	test('works', async function() {
+		let job = await User.update('u1', updateData);
+		expect(job).toEqual({
+			username: 'u1',
+			...updateData
+		});
+	});
 
-  static async get(username) {
-    const userRes = await db.query(
-          `SELECT username,
-                  first_name AS "firstName",
-                  last_name AS "lastName",
-                  email,
-                  is_admin AS "isAdmin"
-           FROM users
-           WHERE username = $1`,
-        [username],
-    );
+	test('works: set password', async function() {
+		let job = await User.update('u1', {
+			password: 'new'
+		});
+		expect(job).toEqual({
+			username: 'u1',
+			firstName: 'U1F',
+			lastName: 'U1L',
+			email: 'u1@email.com',
+			isAdmin: false
+		});
+		const found = await db.query("SELECT * FROM users WHERE username = 'u1'");
+		expect(found.rows.length).toEqual(1);
+		expect(found.rows[0].password.startsWith('$2b$')).toEqual(true);
+	});
 
-    const user = userRes.rows[0];
+	test('not found if no such user', async function() {
+		try {
+			await User.update('nope', {
+				firstName: 'test'
+			});
+			fail();
+		} catch (err) {
+			expect(err instanceof NotFoundError).toBeTruthy();
+		}
+	});
 
-    if (!user) throw new NotFoundError(`No user: ${username}`);
+	test('bad request if no data', async function() {
+		expect.assertions(1);
+		try {
+			await User.update('c1', {});
+			fail();
+		} catch (err) {
+			expect(err instanceof BadRequestError).toBeTruthy();
+		}
+	});
+});
 
-    return user;
-  }
+/************************************** remove */
 
-  /** Update user data with `data`.
-   *
-   * This is a "partial update" --- it's fine if data doesn't contain
-   * all the fields; this only changes provided ones.
-   *
-   * Data can include:
-   *   { firstName, lastName, password, email, isAdmin }
-   *
-   * Returns { username, firstName, lastName, email, isAdmin }
-   *
-   * Throws NotFoundError if not found.
-   *
-   * WARNING: this function can set a new password or make a user an admin.
-   * Callers of this function must be certain they have validated inputs to this
-   * or a serious security risks are opened.
-   */
+describe('remove', function() {
+	test('works', async function() {
+		await User.remove('u1');
+		const res = await db.query("SELECT * FROM users WHERE username='u1'");
+		expect(res.rows.length).toEqual(0);
+	});
 
-  static async update(username, data) {
-    if (data.password) {
-      data.password = await bcrypt.hash(data.password, BCRYPT_WORK_FACTOR);
-    }
+	test('not found if no such user', async function() {
+		try {
+			await User.remove('nope');
+			fail();
+		} catch (err) {
+			expect(err instanceof NotFoundError).toBeTruthy();
+		}
+	});
+});
 
-    const { setCols, values } = sqlForPartialUpdate(
-        data,
-        {
-          firstName: "first_name",
-          lastName: "last_name",
-          isAdmin: "is_admin",
-        });
-    const usernameVarIdx = "$" + (values.length + 1);
+/************************************** applyToJob */
 
-    const querySql = `UPDATE users 
-                      SET ${setCols} 
-                      WHERE username = ${usernameVarIdx} 
-                      RETURNING username,
-                                first_name AS "firstName",
-                                last_name AS "lastName",
-                                email,
-                                is_admin AS "isAdmin"`;
-    const result = await db.query(querySql, [...values, username]);
-    const user = result.rows[0];
+describe('applyToJob', function() {
+	test('works', async function() {
+		await User.applyToJob('u1', testJobIds[1]);
 
-    if (!user) throw new NotFoundError(`No user: ${username}`);
+		const res = await db.query('SELECT * FROM applications WHERE job_id=$1', [ testJobIds[1] ]);
+		expect(res.rows).toEqual([
+			{
+				job_id: testJobIds[1],
+				username: 'u1'
+			}
+		]);
+	});
 
-    delete user.password;
-    return user;
-  }
+	test('not found if no such job', async function() {
+		try {
+			await User.applyToJob('u1', 0, 'applied');
+			fail();
+		} catch (err) {
+			expect(err instanceof NotFoundError).toBeTruthy();
+		}
+	});
 
-  /** Delete given user from database; returns undefined. */
-
-  static async remove(username) {
-    let result = await db.query(
-          `DELETE
-           FROM users
-           WHERE username = $1
-           RETURNING username`,
-        [username],
-    );
-    const user = result.rows[0];
-
-    if (!user) throw new NotFoundError(`No user: ${username}`);
-  }
-}
-
-
-module.exports = User;
+	test('not found if no such user', async function() {
+		try {
+			await User.applyToJob('nope', testJobIds[0], 'applied');
+			fail();
+		} catch (err) {
+			expect(err instanceof NotFoundError).toBeTruthy();
+		}
+	});
+});
